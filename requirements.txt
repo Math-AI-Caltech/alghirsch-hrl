@@ -1,0 +1,9 @@
+gymnasium==1.1.1
+torch==2.7.1
+torch-geometric==2.6.1
+tqdm==4.67.1
+pytest==8.4.2
+scikit-learn==1.6.1
+scipy==1.13.1
+matplotlib==3.9.4
+numpy==2.0.2
