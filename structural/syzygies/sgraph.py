@@ -94,6 +94,8 @@ class SGraph:
         if self._backend == Backend.CUDA:
             import torch
             if self._is_bool_mask(first):
+                if isinstance(first, torch.Tensor):
+                    return first.bool().to(self._device), *rest
                 return (torch.tensor(first, device = self._device, dtype = torch.bool), *rest)
 
             mask = torch.zeros(self.num_generators, dtype = torch.bool, device = self._device)

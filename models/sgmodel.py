@@ -21,8 +21,10 @@ from structural.syzygies.sgraph import SGraph
 def _expand(data: Data, irreducible_edges: List):
     batch = []
     for edges in irreducible_edges:
-        edge_index = torch.tensor(edges).swapaxes(0,1).to(data.x.device) if len(edges) > 0 else \
-            torch.zeros((2,0)).long().to(data.x.device)
+        if isinstance(edges, list):
+            edge_index = torch.tensor(edges).swapaxes(0,1).to(data.x.device) if len(edges) > 0 else \
+                torch.zeros((2,0)).long().to(data.x.device)
+        edge_index = edges.swapaxes(0,1).to(data.x.device)
         edge_attr = 2. + torch.zeros((len(edges), 1)).to(data.x.device)
         edge_index = torch.concat([edge_index, data.edge_index], dim = 1)
         edge_attr = torch.concat([edge_attr, data.edge_attr], dim = 0)

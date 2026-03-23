@@ -1,0 +1,7 @@
+*.so
+*.pyc
+env/*
+.lprof/*
+*.pth
+*.ipynb
+test.py
