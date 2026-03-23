@@ -5,3 +5,5 @@ env/*
 *.pth
 *.ipynb
 test.py
+build/*
+*egg-info*
