@@ -1,8 +1,17 @@
 from typing import (
     Optional,
+    List,
     Any
 )
 from enum import Enum
+
+import numpy as np
+from torch_geometric.data import Data
+
+from ._sgraph_py import (
+    SGraphPy,
+    from_sgraph
+)
 
 class Backend(str, Enum):
     PYTHON = "python"
@@ -21,18 +30,27 @@ class SGraph:
     ) -> None:
         self._d = d
         self._n = n
+        self._max_level = max_level
         self._device = device
         self._backend = backend
+        self._py_sgraph = SGraphPy(d = d, n = n, max_level = max_level, **kwargs)
 
         if backend == Backend.PYTHON:
-            from _sgraph_py import SGraphPy
-            self._impl = SGraphPy(d = d, n = n, max_level = max_level, **kwargs)
+            self._impl = self._py_sgraph
         elif backend == Backend.CUDA:
-            from cuda.syzygies import SGraphCached
+            from .cuda.syzygies import SGraphCached
             device = "cpu" if device is None else device
             self._impl = SGraphCached(n = n, d = d, device = device, max_level = max_level)
         else:
             raise ValueError(f"Unknown backend: {backend}")
+
+    @property
+    def graph(self) -> Data:
+        return from_sgraph(
+            self._py_sgraph.graph, n = self._n, generators = self._py_sgraph.generators, levels = [1]).to(self._device)
+
+    @property
+    def generators(self) -> List[int]: return self._py_sgraph.generators
 
     @property
     def num_generators(self) -> int: return self._impl.num_generators
@@ -54,7 +72,6 @@ class SGraph:
         return self._impl.count_irreducible(*args, **kwargs)
 
     def find_irreducible(self, *args: Any, **kwargs: Any):
-        import code; code.interact(local = locals())
         fn = getattr(self._impl, "find_irreducible", None)
         if fn is None:
             raise NotImplementedError(
@@ -114,3 +131,5 @@ if __name__ == "__main__":
     mask[ids] = 1
     assert (sgraph.count_irreducible(mask == 1, export_edges = True).tolist() == [])
     assert (sgraph.count_irreducible(ids, export_edges = True).tolist() == [])
+
+    import code; code.interact(local = locals())

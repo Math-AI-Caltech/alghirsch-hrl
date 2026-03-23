@@ -2,3 +2,5 @@
 *.pyc
 env/*
 .lprof/*
+*.pth
+*.ipynb
