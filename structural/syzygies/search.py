@@ -35,6 +35,10 @@ class SearchEngine:
         if diam_bounds is None:
             diam_bounds = (self._sgraph.d, 1e5)
 
+        subgraph = self._cpu_graph.subgraph(torch.tensor(np.where(mask)[0].tolist()))#.cpu()
+        diam = diameter.max_path_len(diameter.shortest_path(subgraph.x, subgraph.edge_index))
+        if not (diam > diam_bounds[0] and diam < diam_bounds[1]): return solutions
+
         counter = itertools.count() # breaks ties
         num_steps = 0
 
