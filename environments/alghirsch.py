@@ -126,11 +126,13 @@ class AlgHirschEnv(SubsetEnv):
                 self.simulate(obs, torch.tensor([a], device = self._device).expand(obs.shape[0]))),
             device = self._device)
 
+        larger_than = lambda a,x: torch.logical_and(diam_a_fn(a) > x, diam_a_fn(a) > 0)
+
         return torch.stack([
-            diam_a_fn(a) > (obs.sum(dim=-1) - 1)
+            larger_than(a, (obs.sum(dim=-1) - 1))
             for a in range(self.num_actions)]).T if self._option == Option.SPINE else \
                 torch.stack([
-                    diam_a_fn(a) > self._d
+                    larger_than(a, self._d)
                     for a in range(self.num_actions)]).T # Option.LINEAR
 
     @maybe_profile
