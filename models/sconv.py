@@ -46,6 +46,6 @@ class SConv(MessagePassing):
         k = k.view(-1, x_i.shape[1], self._num_heads, self._embd_dim).transpose(1,2)
         v = v.view(-1, x_i.shape[1], self._num_heads, self._embd_dim).transpose(1,2)
 
-        # attn = F.softmax(((q @ k.transpose(-2,-1)) / math.sqrt(k.size(-1))), dim=-1)
-        attn = (q @ k.transpose(-2, -1)) / math.sqrt(self._embd_dim) # no softmax
+        attn = F.softmax(((q @ k.transpose(-2,-1)) / math.sqrt(k.size(-1))), dim=-1)
+        # attn = (q @ k.transpose(-2, -1)) / math.sqrt(self._embd_dim) # no softmax
         return self._mlp((attn @ v).mean(dim=1).flatten(-2,-1))

@@ -17,9 +17,9 @@ from structural.syzygies.sgraph import (
 import diameter
 
 from enum import Enum
-class Option(str, Enum):
-    SPINE = "spine"
-    LINEAR = "linear"
+class Option(int, Enum):
+    SPINE = 0
+    LINEAR = 1
 
 # Profiling using `line_profiler`
 import sys
@@ -57,14 +57,27 @@ class AlgHirschEnv(SubsetEnv):
             dim         = self._sgraph.num_generators,
             device      = device)
 
-        self._option = kwargs.get("option", Option.SPINE)
+        self._options = torch.tensor([
+            kwargs.get("options", Option.SPINE)
+                for _ in range(num_envs)], device = self._device)
 
         self._default_node = torch.tensor([1], device = self._device)
         self._graph = self._sgraph.graph
 
-        self._aux_keys.append("valid_actions")
+        # PBRS phi(s) = -#irr(s)
+        self._gamma = kwargs.get("gamma", 0.99)
+        self._lin_term = torch.zeros((num_envs,), device = self._device)
 
-    def _safe_where(self, x: torch.Tensor) -> torch.Tensor: return x if len(x) != 0 else self._default_node
+        self._aux_keys.append("valid_actions")
+        self._aux_keys.append("irreducible_edges")
+        self._aux_keys.append("options")
+
+    def _safe_where(self, x: torch.Tensor) -> torch.Tensor:
+        return x if len(x) != 0 else self._default_node
+
+    def _count_irreducible(self, irreducible_edges: List) -> torch.Tensor:
+        return torch.tensor([len(e) for e in irreducible_edges],
+            dtype = torch.float32, device = self._device)
 
     def to_graph(self, obs: torch.Tensor) -> List[Data]:
         """
@@ -82,29 +95,45 @@ class AlgHirschEnv(SubsetEnv):
         ret = super().reset(**kwargs)
         obs = ret["obs"]
 
+        self._options = torch.tensor([
+            kwargs.get("options", Option.SPINE)
+                for _ in range(self._num_envs)], device = self._device)
         irreducible_edges = [self._sgraph.find_irreducible(obs[i] == 1) for i in range(obs.shape[0])]
         diameter_term = _diameter_batched_fn(self.to_graph(obs), device = self._device)
+        self._lin_term = self._count_irreducible(irreducible_edges)
 
         return {
             "obs": obs,
             "info": ret["info"],
             "irreducible_edges": irreducible_edges,
             "diameter_term": diameter_term,
-            "valid_actions": self.valid_actions(obs)
+            "valid_actions": self.valid_actions(obs, self.options),
+            "options": self.options
         }
+
+    @property
+    def options(self) -> torch.Tensor:
+        return self._options.clone()
 
     def masked_reset(self, reset_mask: torch.Tensor):
         super().masked_reset(reset_mask)
+
+        self._options = self._options*(~reset_mask) + \
+            reset_mask*0 # redundant: also will be handled in Autoreset(...) wrapper.
+
         obs = self._get_obs()
 
         diameter_term = _diameter_batched_fn(self.to_graph(obs), device = self._device)
-        valid_actions = self.valid_actions(obs)
+        valid_actions = self.valid_actions(obs, self.options)
 
         ret = {
-            "irreducible_edges": [self._sgraph.find_irreducible(obs[i] == 1) for i in range(obs.shape[0])],
+            "irreducible_edges": [self._sgraph.find_irreducible(obs[i] == 1) for i in torch.where(reset_mask)[0]],
             "diameter_term": [diameter_term[i] for i in torch.where(reset_mask)[0]],
-            "valid_actions": [valid_actions[i] for i in torch.where(reset_mask)[0]]
+            "valid_actions": [valid_actions[i] for i in torch.where(reset_mask)[0]],
+            "options": [self.options[i] for i in torch.where(reset_mask)[0]]
         }
+
+        self._lin_term[reset_mask] = self._count_irreducible(ret["irreducible_edges"])
 
         return ret
 
@@ -112,7 +141,7 @@ class AlgHirschEnv(SubsetEnv):
         ids = np.random.randint(0, len(self._sgraph.generators), (num_envs,))
         return torch.tensor(np.eye(self._sgraph.num_generators)[ids], dtype = torch.int).to(self._device)
 
-    def valid_actions(self, obs: torch.Tensor) -> torch.BoolTensor:
+    def valid_actions(self, obs: torch.Tensor, options: torch.Tensor) -> torch.BoolTensor:
         """
         Args:
             obs (torch.Tensor): Mask of selected generators. (Shape: (num_envs, #generators))
@@ -126,31 +155,40 @@ class AlgHirschEnv(SubsetEnv):
                 self.simulate(obs, torch.tensor([a], device = self._device).expand(obs.shape[0]))),
             device = self._device)
 
-        larger_than = lambda a,x: torch.logical_and(diam_a_fn(a) > x, diam_a_fn(a) > 0)
+        diam = torch.stack([diam_a_fn(a) for a in range(self.num_actions)])
+        positive = diam > 0
 
-        return torch.stack([
-            larger_than(a, (obs.sum(dim=-1) - 1))
-            for a in range(self.num_actions)]).T if self._option == Option.SPINE else \
-                torch.stack([
-                    larger_than(a, self._d)
-                    for a in range(self.num_actions)]).T # Option.LINEAR
+        spine_valid = torch.logical_and(
+            diam > (obs.sum(dim=-1) - 1), positive).T # Option.SPINE
+
+        linear_valid = torch.logical_and(
+            diam > self._d, positive).T # Option.LINEAR
+
+        options = options[..., torch.newaxis]
+        return (options*linear_valid + (1-options)*spine_valid) > .5 # .5 is safer
+
+    def set_options(self, options: torch.Tensor):
+        self._options = options
 
     @maybe_profile
-    def step(self, action: torch.IntTensor, option: Option = Option.SPINE) -> Dict:
-        self._option = option
+    def step(self, action: torch.IntTensor) -> Dict:
         ret = super().step(action)
         obs = self._get_obs()
 
         irreducible_edges = [self._sgraph.find_irreducible(obs[i] == 1) for i in range(obs.shape[0])]
-        lin_term_full = torch.tensor([len(e) for e in irreducible_edges],dtype = torch.float32).to(self._device)
+        lin_term_full = self._count_irreducible(irreducible_edges)
         diameter_term = _diameter_batched_fn(self.to_graph(obs), device = self._device)
 
-        reward = {
-            "reward": torch.logical_and(diameter_term == self._d + 1, lin_term_full == 0) + 0.0
-        }
-        reward["terminated"] = (reward["reward"] == 1)
+        terminated = torch.logical_and(diameter_term == self._d + 1, lin_term_full == 0)
 
-        valid_actions = self.valid_actions(obs)
+        # PBRS + terminal reward
+        reward = {
+            "reward": (self._lin_term - self._gamma*lin_term_full) + 100.*terminated,
+            "terminated": terminated
+        }
+        self._lin_term = lin_term_full
+
+        valid_actions = self.valid_actions(obs, self.options)
         ret["truncated"] = torch.logical_or(ret["truncated"], valid_actions.sum(dim=1) == 0)
 
         return {
@@ -161,5 +199,6 @@ class AlgHirschEnv(SubsetEnv):
             "info": ret["info"],
             "irreducible_edges": irreducible_edges,
             "diameter_term": diameter_term,
-            "valid_actions": valid_actions
+            "valid_actions": valid_actions,
+            "options": self.options
         }

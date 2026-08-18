@@ -1,4 +1,4 @@
-r"""train.py
+r"""train_ppoc.py
 """
 from dataclasses import dataclass
 from typing import Tuple
@@ -6,18 +6,19 @@ import tqdm
 
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn import functional as F
 
 import numpy as np
 from models.agents import (
+    Agent,
     Actor,
     QNetwork,
-    MinQNetwork,
-    SpineAgent
+    MinQNetwork
 )
 from models.sgmodel import SGModel
 
 from environments.alghirsch import AlgHirschEnv
-from environments.options import HeuristicLinear
+from environments.options import ChainOption
 from environments.wrappers import (
     TrajectoryRecorder,
     EpisodeStatistics,
@@ -25,7 +26,8 @@ from environments.wrappers import (
 )
 
 from structural.syzygies.sgraph import SGraph
-import rl.ppo as ppo
+from rl.pretrain import pretrain_linear, PretrainConfig
+import rl.ppoc as ppoc
 
 @dataclass
 class Config:
@@ -33,7 +35,7 @@ class Config:
     d: int = 4
     num_envs: int = 16
 
-    device: str = "cuda:0"
+    device: str = "cuda"
     # PPO Config
     num_iterations: int = 100
     num_steps: int = 128
@@ -59,10 +61,12 @@ class Config:
 def initialize_env(cfg: Config):
     envs = AlgHirschEnv(
         num_envs    = cfg.num_envs,
+        max_len     = cfg.d + 3 + 10,
         n           = cfg.n,
         d           = cfg.d,
+        gamma       = cfg.gamma,
         device      = cfg.device)
-    envs = HeuristicLinear(envs)
+    envs = ChainOption(envs)
     envs = EpisodeStatistics(envs)
     envs = TrajectoryRecorder(envs)
     envs = Autoreset(envs)
@@ -91,25 +95,37 @@ def initialize_models(sgraph: SGraph, cfg) -> Tuple[Actor, MinQNetwork]:
 
     return actor, q_net
 
-def train(cfg: Config):
+def train(cfg: Config, pretrain_cfg: PretrainConfig):
     envs = initialize_env(cfg)
-    policy, q_net = initialize_models(
+    policy_spine, q_net_spine = initialize_models(
+        sgraph  = envs._sgraph,
+        cfg     = cfg)
+    policy_linear, q_net_linear = initialize_models(
         sgraph  = envs._sgraph,
         cfg     = cfg)
 
-    agent = SpineAgent(
-        policy = policy,
-        q_net = q_net,
-        policy_optimizer = optim.Adam(
-            policy.parameters(), lr = cfg.lr, eps = .5e-4),
-        q_optimizer = optim.Adam(
-            q_net.parameters(), lr = cfg.lr, eps = .5e-4))
+    agent = Agent(
+        policy_spine = policy_spine,
+        q_net_spine = q_net_spine,
+        policy_spine_optimizer = optim.Adam(
+            policy_spine.parameters(), lr = cfg.lr, eps = .5e-4),
+        q_spine_optimizer = optim.Adam(
+            q_net_spine.parameters(), lr = cfg.lr, eps = .5e-4),
+
+        policy_linear = policy_linear,
+        q_net_linear = q_net_linear,
+        policy_linear_optimizer = optim.Adam(
+            policy_linear.parameters(), lr = cfg.lr, eps = .5e-4),
+        q_linear_optimizer = optim.Adam(
+            q_net_linear.parameters(), lr = cfg.lr, eps = .5e-4))
+
+    pretrain_linear(envs, agent, pretrain_cfg)
 
     ret = envs.reset()
     batch_size = cfg.num_steps * envs.num_envs
     with tqdm.trange(1, cfg.num_iterations + 1) as iterations:
         for _ in iterations:
-            batch, info = ppo.explore_env(envs, agent, cfg, initial_state = ret)
+            batch, info = ppoc.explore_env(envs, agent, cfg, initial_state = ret)
 
             b_inds = np.arange(batch_size)
             for epoch in tqdm.trange(cfg.update_epochs, colour = "blue", desc = "Optimization"):
@@ -118,18 +134,25 @@ def train(cfg: Config):
                     end = start + cfg.minibatch_size
                     mb_inds = b_inds[start:end]
 
-                    agent.policy_optimizer.zero_grad()
-                    agent.q_optimizer.zero_grad()
+                    agent.policy_spine_optimizer.zero_grad()
+                    agent.q_spine_optimizer.zero_grad()
+                    agent.policy_linear_optimizer.zero_grad()
+                    agent.q_linear_optimizer.zero_grad()
 
-                    loss_dict = ppo.loss_fn(batch, mb_inds, agent, cfg)
+                    loss_dict = ppoc.loss_fn(batch, mb_inds, agent, cfg)
                     loss = loss_dict["policy_loss"] - cfg.ent_coef * loss_dict["entropy_loss"] + cfg.vf_coef * loss_dict["value_loss"]
                     loss.backward()
 
-                    nn.utils.clip_grad_norm_(agent.policy.parameters(), cfg.max_grad_norm)
-                    nn.utils.clip_grad_norm_(agent.q_net.parameters(), cfg.max_grad_norm)
+                    nn.utils.clip_grad_norm_(agent.policy_spine.parameters(), cfg.max_grad_norm)
+                    nn.utils.clip_grad_norm_(agent.q_net_spine.parameters(), cfg.max_grad_norm)
 
-                    agent.policy_optimizer.step()
-                    agent.q_optimizer.step()
+                    nn.utils.clip_grad_norm_(agent.policy_linear.parameters(), cfg.max_grad_norm)
+                    nn.utils.clip_grad_norm_(agent.q_net_linear.parameters(), cfg.max_grad_norm)
+
+                    agent.policy_spine_optimizer.step()
+                    agent.q_spine_optimizer.step()
+                    agent.policy_linear_optimizer.step()
+                    agent.q_linear_optimizer.step()
 
             iterations.set_description(
                     f"#sols: {len(envs.terminal_trajectories)} | " + \
@@ -137,4 +160,5 @@ def train(cfg: Config):
 
 if __name__ == "__main__":
     cfg = Config()
-    train(cfg)
+    pretrain_cfg = PretrainConfig()
+    train(cfg, pretrain_cfg)
