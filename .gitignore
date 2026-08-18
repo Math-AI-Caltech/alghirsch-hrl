@@ -4,3 +4,7 @@ env/*
 .lprof/*
 *.pth
 *.ipynb
+env/*
+env
+*.zip
+*.npy
