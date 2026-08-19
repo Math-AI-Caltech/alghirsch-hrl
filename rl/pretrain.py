@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import List
 from dataclasses import dataclass
 import tqdm
@@ -21,7 +22,7 @@ class PretrainConfig:
     num_states: int = 256
     rollout_steps: int = 400
     temp: float = 2.0
-    device: str = "cuda"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
     lr: float = 1e-3
     minibatch_size: int = 128
     max_grad_norm: float = 0.5

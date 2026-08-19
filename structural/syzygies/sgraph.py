@@ -39,7 +39,7 @@ class SGraph:
             self._impl = self._py_sgraph
         elif backend == Backend.CUDA:
             from syzygies import SGraphCached
-            device = "cpu" if device is None else device
+            device = "cpu" if "cuda" not in device.lower() else device
             self._impl = SGraphCached(n = n, d = d, device = device, max_level = max_level)
         else:
             raise ValueError(f"Unknown backend: {backend}")

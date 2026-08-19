@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Tuple
 import tqdm
 
+import torch
 import torch.nn as nn
 import torch.optim as optim
 
@@ -33,7 +34,7 @@ class Config:
     d: int = 4
     num_envs: int = 16
 
-    device: str = "cuda:0"
+    device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
     # PPO Config
     num_iterations: int = 100
     num_steps: int = 128
@@ -133,7 +134,7 @@ def train(cfg: Config):
 
             iterations.set_description(
                     f"#sols: {len(envs.terminal_trajectories)} | " + \
-                    f"mean_return: {((info["total_return"] * info["total_episode_len"]).sum() / info["total_episode_len"].sum()).cpu().numpy()}")
+                    f"mean_return: {((info['otal_return'] * info['total_episode_len']).sum() / info['total_episode_len'].sum()).cpu().numpy()}")
 
 if __name__ == "__main__":
     cfg = Config()
